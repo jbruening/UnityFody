@@ -9,10 +9,32 @@ using System.Linq;
 using System.Xml.Linq;
 using System.Xml;
 using Assembly = System.Reflection.Assembly;
+using UnityEditor.Callbacks;
 
 [InitializeOnLoad]
 public static class FodyAssemblyPostProcessor
 {
+    [PostProcessBuildAttribute(1)]
+    public static void OnPostprocessBuild(BuildTarget target, string pathToBuiltProject)
+    {
+        var exeDir = Path.GetDirectoryName(pathToBuiltProject);
+        var dataFolder = Path.Combine(exeDir, Path.GetFileNameWithoutExtension(pathToBuiltProject) + "_Data");
+        if (!Directory.Exists(dataFolder))
+            return;
+        var managed = Path.Combine(dataFolder, "Managed");
+        if (!Directory.Exists(managed))
+            return;
+        Debug.LogFormat("Fody post-weaving {0}", pathToBuiltProject);
+        var assemblyResolver = new DefaultAssemblyResolver();
+        assemblyResolver.AddSearchDirectory(managed);
+        HashSet<string> assemblyPaths = new HashSet<string>();
+        foreach(var file in Directory.GetFiles(managed).Where(d => Path.GetExtension(d) == ".dll"))
+        {
+            assemblyPaths.Add(file);
+        }
+        ProcessAssembliesIn(assemblyPaths, assemblyResolver);
+    }
+
     static FodyAssemblyPostProcessor()
     {
         try
@@ -53,58 +75,7 @@ public static class FodyAssemblyPostProcessor
             // Add path to the Unity managed dlls
             assemblyResolver.AddSearchDirectory( Path.GetDirectoryName( EditorApplication.applicationPath ) + "/Data/Managed" );
 
-            // Create reader parameters with resolver
-            var readerParameters = new ReaderParameters();
-            readerParameters.AssemblyResolver = assemblyResolver;
-
-            // Create writer parameters
-            var writerParameters = new WriterParameters();
-
-            var weavers = InitializeWeavers(assemblyResolver);
-
-            // Process any assemblies which need it
-            foreach( String assemblyPath in assemblyPaths )
-            {
-                // mdbs have the naming convention myDll.dll.mdb whereas pdbs have myDll.pdb
-                String mdbPath = assemblyPath + ".mdb";
-                String pdbPath = assemblyPath.Substring( 0, assemblyPath.Length - 3 ) + "pdb";
-
-                // Figure out if there's an pdb/mdb to go with it
-                if( File.Exists( pdbPath ) )
-                {
-                    readerParameters.ReadSymbols = true;
-                    readerParameters.SymbolReaderProvider = new Mono.Cecil.Pdb.PdbReaderProvider();
-                    writerParameters.WriteSymbols = true;
-                    writerParameters.SymbolWriterProvider = new Mono.Cecil.Mdb.MdbWriterProvider(); // pdb written out as mdb, as mono can't work with pdbs
-                }
-                else if( File.Exists( mdbPath ) )
-                {
-                    readerParameters.ReadSymbols = true;
-                    readerParameters.SymbolReaderProvider = new Mono.Cecil.Mdb.MdbReaderProvider();
-                    writerParameters.WriteSymbols = true;
-                    writerParameters.SymbolWriterProvider = new Mono.Cecil.Mdb.MdbWriterProvider();
-                }
-                else
-                {
-                    readerParameters.ReadSymbols = false;
-                    readerParameters.SymbolReaderProvider = null;
-                    writerParameters.WriteSymbols = false;
-                    writerParameters.SymbolWriterProvider = null;
-                }
-
-                // Read assembly
-                var module = ModuleDefinition.ReadModule( assemblyPath, readerParameters);
-
-                PrepareWeaversForModule(weavers, module);
-                
-                // Process it if it hasn't already
-                //Debug.Log( "Processing " + Path.GetFileName( assemblyPath ) );
-                if(ProcessAssembly(assemblyPath, module, weavers))
-                {
-                    module.Write( assemblyPath, writerParameters );
-                    //Debug.Log( "Done writing" );
-                }
-            }
+            ProcessAssembliesIn(assemblyPaths, assemblyResolver);
 
             // Unlock now that we're done
             EditorApplication.UnlockReloadAssemblies();
@@ -131,11 +102,74 @@ public static class FodyAssemblyPostProcessor
         {
             if (weaver.WeaverInstance == null) continue;
 
-            weaver.Run("Execute");
+            try
+            {
+                weaver.Run("Execute");
+            }
+            catch(Exception e)
+            {
+                Debug.LogErrorFormat("Failed to run weaver {0}: {1}", weaver.PrettyName(), e);
+            }
         }
 
         AddProcessedFlag(module);
         return true;
+    }
+
+    static void ProcessAssembliesIn(HashSet<string> assemblyPaths, IAssemblyResolver assemblyResolver)
+    {
+        // Create reader parameters with resolver
+        var readerParameters = new ReaderParameters();
+        readerParameters.AssemblyResolver = assemblyResolver;
+
+        // Create writer parameters
+        var writerParameters = new WriterParameters();
+
+        var weavers = InitializeWeavers(assemblyResolver);
+
+        // Process any assemblies which need it
+        foreach (String assemblyPath in assemblyPaths)
+        {
+            // mdbs have the naming convention myDll.dll.mdb whereas pdbs have myDll.pdb
+            String mdbPath = assemblyPath + ".mdb";
+            String pdbPath = assemblyPath.Substring(0, assemblyPath.Length - 3) + "pdb";
+
+            // Figure out if there's an pdb/mdb to go with it
+            if (File.Exists(pdbPath))
+            {
+                readerParameters.ReadSymbols = true;
+                readerParameters.SymbolReaderProvider = new Mono.Cecil.Pdb.PdbReaderProvider();
+                writerParameters.WriteSymbols = true;
+                writerParameters.SymbolWriterProvider = new Mono.Cecil.Mdb.MdbWriterProvider(); // pdb written out as mdb, as mono can't work with pdbs
+            }
+            else if (File.Exists(mdbPath))
+            {
+                readerParameters.ReadSymbols = true;
+                readerParameters.SymbolReaderProvider = new Mono.Cecil.Mdb.MdbReaderProvider();
+                writerParameters.WriteSymbols = true;
+                writerParameters.SymbolWriterProvider = new Mono.Cecil.Mdb.MdbWriterProvider();
+            }
+            else
+            {
+                readerParameters.ReadSymbols = false;
+                readerParameters.SymbolReaderProvider = null;
+                writerParameters.WriteSymbols = false;
+                writerParameters.SymbolWriterProvider = null;
+            }
+
+            // Read assembly
+            var module = ModuleDefinition.ReadModule(assemblyPath, readerParameters);
+
+            PrepareWeaversForModule(weavers, module);
+
+            // Process it if it hasn't already
+            //Debug.Log( "Processing " + Path.GetFileName( assemblyPath ) );
+            if (ProcessAssembly(assemblyPath, module, weavers))
+            {
+                module.Write(assemblyPath, writerParameters);
+                //Debug.Log( "Done writing" );
+            }
+        }
     }
 
     private static void PrepareWeaversForModule(List<WeaverEntry> weavers, ModuleDefinition module)
@@ -225,7 +259,7 @@ public static class FodyAssemblyPostProcessor
             weavers.Add(entry);
         }
 
-        Debug.LogFormat("Fody processor running for weavers {0}", string.Join("; ", weavers.Select(w => w.WeaverType.Assembly.GetName().Name + "::" + w.WeaverType.FullName).ToArray()));
+        Debug.LogFormat("Fody processor running for weavers {0}", string.Join("; ", weavers.Select(w => w.PrettyName()).ToArray()));
 
         return weavers;
     }
@@ -302,6 +336,13 @@ public static class FodyAssemblyPostProcessor
         public Type WeaverType;
 
         public object WeaverInstance;
+
+        public string PrettyName()
+        {
+            if (WeaverType == null)
+                return "invalid weaver: " + AssemblyName + "::" + TypeName;
+            return WeaverType.Assembly.GetName().Name + "::" + WeaverType.FullName;
+        }
 
         internal void SetProperty(string property, object value)
         {
