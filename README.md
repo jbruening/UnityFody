@@ -8,3 +8,8 @@ To ensure that setting up a plugin branch is consistent, the mono cecil dlls in 
 
 ## Unity compatible plugin branches
 * [PropertyChanged](https://github.com/jbruening/PropertyChanged/tree/3.5_compat)
+
+
+## Settings
+the FodyWeavers.xml can accept the following attributes in the \<Weavers> element:
+* ProcessAssemblies - comma separate list of file names for which dlls to actually process. Other dlls found in search paths are skipped.  By default, this is "Assembly-CSharp.dll,Assembly-CSharp-firstpass.dll" if the attribute is not specified.
