@@ -14,6 +14,12 @@ using UnityEditor.Callbacks;
 [InitializeOnLoad]
 public static class FodyAssemblyPostProcessor
 {
+    static HashSet<string> DefaultAssemblies = new HashSet<string>()
+    {
+        "Assembly-CSharp.dll",
+        "Assembly-CSharp-firstpass.dll"
+    };
+
     [PostProcessBuildAttribute(1)]
     public static void OnPostprocessBuild(BuildTarget target, string pathToBuiltProject)
     {
@@ -87,35 +93,7 @@ public static class FodyAssemblyPostProcessor
 
         //Debug.Log("Fody processor finished");
     }
-
-    private static bool ProcessAssembly(string assemblyPath, ModuleDefinition module, IEnumerable<WeaverEntry> weavers)
-    {
-        if (module.Types.Any(t => t.Name == "ProcessedByFody"))
-        {
-            //Debug.LogFormat("skipped {0} as it is already processed", assemblyPath);
-            return false;
-        }
-
-        //Debug.Log("Writing to " + assemblyPath);
-
-        foreach(var weaver in weavers)
-        {
-            if (weaver.WeaverInstance == null) continue;
-
-            try
-            {
-                weaver.Run("Execute");
-            }
-            catch(Exception e)
-            {
-                Debug.LogErrorFormat("Failed to run weaver {0}: {1}", weaver.PrettyName(), e);
-            }
-        }
-
-        AddProcessedFlag(module);
-        return true;
-    }
-
+    
     static void ProcessAssembliesIn(HashSet<string> assemblyPaths, IAssemblyResolver assemblyResolver)
     {
         // Create reader parameters with resolver
@@ -124,8 +102,22 @@ public static class FodyAssemblyPostProcessor
 
         // Create writer parameters
         var writerParameters = new WriterParameters();
+        var fodyConfig = GetFodySettings();
+        if (fodyConfig != null)
+        {
+            var xva = fodyConfig.Root.Attribute("ProcessAssemblies");
+            if (xva != null)
+            {
+                var xass = new HashSet<string>(xva.Value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
+                assemblyPaths.RemoveWhere(a => !xass.Contains(Path.GetFileName(a)));
+            }
+            else
+            {
+                assemblyPaths.RemoveWhere(a => !DefaultAssemblies.Contains(Path.GetFileName(a)));
+            }
+        }
 
-        var weavers = InitializeWeavers(assemblyResolver);
+        var weavers = InitializeWeavers(fodyConfig, assemblyResolver);
 
         // Process any assemblies which need it
         foreach (String assemblyPath in assemblyPaths)
@@ -172,6 +164,34 @@ public static class FodyAssemblyPostProcessor
         }
     }
 
+    private static bool ProcessAssembly(string assemblyPath, ModuleDefinition module, IEnumerable<WeaverEntry> weavers)
+    {
+        if (module.Types.Any(t => t.Name == "ProcessedByFody"))
+        {
+            //Debug.LogFormat("skipped {0} as it is already processed", assemblyPath);
+            return false;
+        }
+
+        //Debug.Log("Writing to " + assemblyPath);
+
+        foreach (var weaver in weavers)
+        {
+            if (weaver.WeaverInstance == null) continue;
+
+            try
+            {
+                weaver.Run("Execute");
+            }
+            catch (Exception e)
+            {
+                Debug.LogErrorFormat("Failed to run weaver {0} on {1}: {2}", weaver.PrettyName(), assemblyPath, e);
+            }
+        }
+
+        AddProcessedFlag(module);
+        return true;
+    }
+
     private static void PrepareWeaversForModule(List<WeaverEntry> weavers, ModuleDefinition module)
     {
         foreach(var weaver in weavers)
@@ -185,19 +205,31 @@ public static class FodyAssemblyPostProcessor
         module.Types.Add(new TypeDefinition(null, "ProcessedByFody", TypeAttributes.NotPublic | TypeAttributes.Abstract | TypeAttributes.Interface));
     }
 
-    static List<WeaverEntry> InitializeWeavers(IAssemblyResolver resolver)
+    static XDocument GetFodySettings()
+    {
+         var configAsset = AssetDatabase.FindAssets("FodyWeavers t:TextAsset").FirstOrDefault();
+         if (!string.IsNullOrEmpty(configAsset))
+         {
+             var configFile = AssetDatabase.GUIDToAssetPath(configAsset);
+
+             //Debug.Log("weavers file located at " + configFile);
+
+             return GetDocument(configFile);
+         }
+         //else
+         //    Debug.LogFormat("no file found named FodyWeavers.xml");
+         
+        return null;
+    }
+
+    static List<WeaverEntry> InitializeWeavers(XDocument fodyConfig, IAssemblyResolver resolver)
     {
         var weavers = new List<WeaverEntry>();
 
         var configAsset = AssetDatabase.FindAssets("FodyWeavers t:TextAsset").FirstOrDefault();
-        if (!string.IsNullOrEmpty(configAsset))
+        if (fodyConfig != null)
         {
-            var configFile = AssetDatabase.GUIDToAssetPath(configAsset);
-
-            //Debug.Log("weavers file located at " + configFile);
-
-            var xDocument = GetDocument(configFile);
-            foreach (var element in xDocument.Root.Elements())
+            foreach (var element in fodyConfig.Root.Elements())
             {
                 var assemblyName = element.Name.LocalName + ".Fody";
                 var existing = weavers.FirstOrDefault(x => string.Equals(x.AssemblyName, assemblyName, StringComparison.OrdinalIgnoreCase));
@@ -245,8 +277,6 @@ public static class FodyAssemblyPostProcessor
                 SetProperties(weaverConfig, resolver);
             }
         }
-        //else
-        //    Debug.LogFormat("no file found named FodyWeavers.xml");
 
         //add a project weaver
         var projectWeavers = typeof(FodyAssemblyPostProcessor).Assembly.GetTypes().Where(t => t.Name.EndsWith("ModuleWeaver"));
