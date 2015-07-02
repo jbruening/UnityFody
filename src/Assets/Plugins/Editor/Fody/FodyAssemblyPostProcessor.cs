@@ -226,7 +226,6 @@ public static class FodyAssemblyPostProcessor
     {
         var weavers = new List<WeaverEntry>();
 
-        var configAsset = AssetDatabase.FindAssets("FodyWeavers t:TextAsset").FirstOrDefault();
         if (fodyConfig != null)
         {
             foreach (var element in fodyConfig.Root.Elements())
