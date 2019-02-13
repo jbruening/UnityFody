@@ -10,6 +10,7 @@ using System.Xml.Linq;
 using System.Xml;
 using Assembly = System.Reflection.Assembly;
 using UnityEditor.Callbacks;
+using UnityEngine.SceneManagement;
 
 [InitializeOnLoad]
 public static class FodyAssemblyPostProcessor
@@ -30,7 +31,7 @@ public static class FodyAssemblyPostProcessor
         var managed = Path.Combine(dataFolder, "Managed");
         if (!Directory.Exists(managed))
             return;
-        Debug.LogFormat("Fody post-weaving {0}", pathToBuiltProject);
+        //Debug.LogFormat("Fody post-weaving {0}", pathToBuiltProject);
         var assemblyResolver = new DefaultAssemblyResolver();
         assemblyResolver.AddSearchDirectory(managed);
         HashSet<string> assemblyPaths = new HashSet<string>();
@@ -41,7 +42,25 @@ public static class FodyAssemblyPostProcessor
         ProcessAssembliesIn(assemblyPaths, assemblyResolver);
     }
 
+    [PostProcessScene]
+    public static void PostprocessScene()
+    {
+        if (!BuildPipeline.isBuildingPlayer)
+            return;
+
+        var scene = SceneManager.GetActiveScene();
+        if (!scene.IsValid() || scene.buildIndex != 0)
+            return;
+
+        DoProcessing();
+    }
+
     static FodyAssemblyPostProcessor()
+    {
+        DoProcessing();
+    }
+
+    static void DoProcessing()
     {
         try
         {
@@ -61,14 +80,28 @@ public static class FodyAssemblyPostProcessor
             // the resolver search directories.
             foreach( System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies() )
             {
-                // Only process assemblies which are in the project
-                if( assembly.Location.Replace( '\\', '/' ).StartsWith( Application.dataPath.Substring( 0, Application.dataPath.Length - 7 ) )  &&
-                    !Path.GetFullPath(assembly.Location).StartsWith(assetPath)) //but not in the assets folder
+                if (assembly.IsDynamic)
+                    continue;
+
+                try
                 {
-                    assemblyPaths.Add( assembly.Location );
+                    // Only process assemblies which are in the project
+                    if( assembly.Location.Replace( '\\', '/' ).StartsWith( Application.dataPath.Substring( 0, Application.dataPath.Length - 7 ) )  &&
+                        !Path.GetFullPath(assembly.Location).StartsWith(assetPath)) //but not in the assets folder
+                    {
+                        assemblyPaths.Add( assembly.Location );
+                    }
+                    if (!string.IsNullOrWhiteSpace(assembly.Location))
+                        // But always add the assembly folder to the search directories
+                        assemblySearchDirectories.Add(Path.GetDirectoryName(assembly.Location));
+                    else
+                        Debug.LogWarning("Assembly " + assembly.FullName + " has an empty path. Skipping");
+
                 }
-                // But always add the assembly folder to the search directories
-                assemblySearchDirectories.Add( Path.GetDirectoryName( assembly.Location ) );
+                catch (Exception e)
+                {
+                    Debug.LogError($"{assembly.FullName} - {e}");
+                }
             }
 
             // Create resolver
@@ -82,18 +115,20 @@ public static class FodyAssemblyPostProcessor
             assemblyResolver.AddSearchDirectory( Path.GetDirectoryName( EditorApplication.applicationPath ) + "/Data/Managed" );
 
             ProcessAssembliesIn(assemblyPaths, assemblyResolver);
-
+        }
+        catch (Exception e)
+        {
+            Debug.LogError(e);
+        }
+        finally
+        {
             // Unlock now that we're done
             EditorApplication.UnlockReloadAssemblies();
-        }
-        catch( Exception e )
-        {
-            Debug.LogError( e );
         }
 
         //Debug.Log("Fody processor finished");
     }
-    
+
     static void ProcessAssembliesIn(HashSet<string> assemblyPaths, IAssemblyResolver assemblyResolver)
     {
         // Create reader parameters with resolver
@@ -154,12 +189,19 @@ public static class FodyAssemblyPostProcessor
 
             PrepareWeaversForModule(weavers, module);
 
-            // Process it if it hasn't already
-            //Debug.Log( "Processing " + Path.GetFileName( assemblyPath ) );
-            if (ProcessAssembly(assemblyPath, module, weavers))
+            try
             {
-                module.Write(assemblyPath, writerParameters);
-                //Debug.Log( "Done writing" );
+                // Process it if it hasn't already
+                //Debug.Log( "Processing " + Path.GetFileName( assemblyPath ) );
+                if (ProcessAssembly(assemblyPath, module, weavers))
+                {
+                    module.Write(assemblyPath, writerParameters);
+                    //Debug.Log( "Done writing" );
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning(e);
             }
         }
     }
@@ -207,18 +249,18 @@ public static class FodyAssemblyPostProcessor
 
     static XDocument GetFodySettings()
     {
-         var configAsset = AssetDatabase.FindAssets("FodyWeavers t:TextAsset").FirstOrDefault();
-         if (!string.IsNullOrEmpty(configAsset))
-         {
-             var configFile = AssetDatabase.GUIDToAssetPath(configAsset);
+        var configAsset = AssetDatabase.FindAssets("FodyWeavers t:TextAsset").FirstOrDefault();
+        if (!string.IsNullOrEmpty(configAsset))
+        {
+            var configFile = AssetDatabase.GUIDToAssetPath(configAsset);
 
-             //Debug.Log("weavers file located at " + configFile);
+            //Debug.Log("weavers file located at " + configFile);
 
-             return GetDocument(configFile);
-         }
-         //else
-         //    Debug.LogFormat("no file found named FodyWeavers.xml");
-         
+            return GetDocument(configFile);
+        }
+        //else
+        //    Debug.LogFormat("no file found named FodyWeavers.xml");
+
         return null;
     }
 
@@ -288,7 +330,7 @@ public static class FodyAssemblyPostProcessor
             weavers.Add(entry);
         }
 
-        Debug.LogFormat("Fody processor running for weavers {0}", string.Join("; ", weavers.Select(w => w.PrettyName()).ToArray()));
+        //Debug.LogFormat("Fody processor running for weavers {0}", string.Join("; ", weavers.Select(w => w.PrettyName()).ToArray()));
 
         return weavers;
     }
